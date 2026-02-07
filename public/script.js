@@ -66,7 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
             stream = null;
         }
         video.srcObject = null;
-        clearInterval(recognitionInterval);
+        // clear recursion handled by stream check
         ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
         startBtn.disabled = false;
@@ -80,103 +80,106 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!video.videoWidth) return;
         overlayCanvas.width = video.clientWidth;
         overlayCanvas.height = video.clientHeight;
-        // Adjust for high DPI displays if needed, but for video overlay 1:1 pixel mapping to CSS pixels usually works best with getBoundingClientRect logic
-        // For simplicity, we match the displayed size.
-        // NOTE: Tesseract gives coordinates based on the original video resolution. 
-        // We need to scale context drawing.
     }
 
     window.addEventListener('resize', resizeCanvas);
 
     function startProcessing() {
-        // Process every 3 seconds to avoid rate limits and high CPU usage
-        recognitionInterval = setInterval(async () => {
-            if (isProcessing || !stream || !worker) return;
-            isProcessing = true;
+        processFrame();
+    }
 
-            try {
-                // Draw current video frame to an offscreen canvas or just extract data
-                // We'll recognize directly from the video element
-                // Note: Tesseract.js can take an HTMLVideoElement
+    async function processFrame() {
+        if (!stream || !worker) return; // Stop if no stream
 
-                // 1. OCR
-                const ret = await worker.recognize(video);
-                const blocks = ret.data.blocks || []; // paragraphs/lines? ret.data.words?
-                // ret.data.lines gives lines of text
-                const lines = ret.data.lines;
+        // 0. Check if we should process
+        if (!overlayToggle.checked) {
+            // If overlay is off, check again in 1 second
+            setTimeout(processFrame, 1000);
+            return;
+        }
 
-                // 2. Prepare for Translation
-                // Filter out short/empty garbage text
-                const validLines = lines.filter(line => line.text.trim().length > 2 && line.confidence > 60);
+        isProcessing = true;
 
-                // 3. Clear previous overlay
-                ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        try {
+            // 1. Capture Frame to Offscreen Canvas
+            // Tesseract sometimes struggles with direct <video> elements in some browsers/contexts.
+            // Drawing to a canvas first is more robust.
+            const captureCanvas = document.createElement('canvas');
+            captureCanvas.width = video.videoWidth;
+            captureCanvas.height = video.videoHeight;
+            const captureCtx = captureCanvas.getContext('2d');
+            captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
 
-                if (!overlayToggle.checked) {
-                    isProcessing = false;
-                    return;
-                }
+            // 2. OCR
+            const ret = await worker.recognize(captureCanvas);
+            const lines = ret.data.lines;
 
-                // Scale factors
-                const scaleX = overlayCanvas.width / video.videoWidth;
-                const scaleY = overlayCanvas.height / video.videoHeight;
+            // 3. Prepare for Translation
+            const validLines = lines.filter(line => line.text.trim().length > 2 && line.confidence > 60);
 
-                ctx.font = 'bold 16px Arial';
-                ctx.textBaseline = 'top';
+            // 4. Clear and Draw Overlay
+            ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-                for (const line of validLines) {
-                    const originalText = line.text.trim();
-                    const targetLang = targetLangSelect.value;
-                    const cacheKey = `${originalText}_${targetLang}`;
+            const scaleX = overlayCanvas.width / video.videoWidth;
+            const scaleY = overlayCanvas.height / video.videoHeight;
 
-                    let translatedText = originalText;
+            ctx.font = 'bold 16px Arial';
+            ctx.textBaseline = 'top';
 
-                    // Check Cache
-                    if (translationCache.has(cacheKey)) {
-                        translatedText = translationCache.get(cacheKey);
-                    } else {
-                        // Call API
-                        try {
-                            const response = await fetch('/api/translate', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ text: originalText, targetLang })
-                            });
-                            const data = await response.json();
-                            if (data.data && data.data.translations) {
-                                translatedText = data.data.translations[0].translatedText;
-                                translationCache.set(cacheKey, translatedText);
-                            }
-                        } catch (e) {
-                            console.error('Translation API error', e);
-                            // Fallback to original text on error
+            for (const line of validLines) {
+                const originalText = line.text.trim();
+                const targetLang = targetLangSelect.value;
+                const cacheKey = `${originalText}_${targetLang}`;
+
+                let translatedText = originalText;
+
+                // Check Cache
+                if (translationCache.has(cacheKey)) {
+                    translatedText = translationCache.get(cacheKey);
+                } else {
+                    // Call API
+                    try {
+                        const response = await fetch('/api/translate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: originalText, targetLang })
+                        });
+                        const data = await response.json();
+                        if (data.data && data.data.translations) {
+                            translatedText = data.data.translations[0].translatedText;
+                            translationCache.set(cacheKey, translatedText);
                         }
+                    } catch (e) {
+                        console.error('Translation API error', e);
                     }
-
-                    // Draw Background Box
-                    const { x0, y0, x1, y1 } = line.bbox;
-                    // Scale coordinates
-                    const sx = x0 * scaleX;
-                    const sy = y0 * scaleY;
-                    const sw = (x1 - x0) * scaleX;
-                    const sh = (y1 - y0) * scaleY;
-
-                    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                    ctx.fillRect(sx, sy, sw, sh);
-
-                    // Draw Text
-                    ctx.fillStyle = '#FFF';
-                    const fontSize = Math.min(24, Math.max(12, sh * 0.8)); // simple dynamic font sizing
-                    ctx.font = `bold ${fontSize}px Arial`;
-                    ctx.fillText(translatedText, sx, sy + (sh - fontSize) / 2); // center vertically roughly
                 }
 
-            } catch (err) {
-                console.error("Processing error: ", err);
-            } finally {
-                isProcessing = false;
+                // Draw Background Box
+                const { x0, y0, x1, y1 } = line.bbox;
+                const sx = x0 * scaleX;
+                const sy = y0 * scaleY;
+                const sw = (x1 - x0) * scaleX;
+                const sh = (y1 - y0) * scaleY;
+
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(sx, sy, sw, sh);
+
+                // Draw Text
+                ctx.fillStyle = '#FFF';
+                const fontSize = Math.min(24, Math.max(12, sh * 0.8));
+                ctx.font = `bold ${fontSize}px Arial`;
+                ctx.fillText(translatedText, sx, sy + (sh - fontSize) / 2);
             }
 
-        }, 2000); // 2 seconds interval
+        } catch (err) {
+            console.error("Processing error: ", err);
+        } finally {
+            isProcessing = false;
+            // Schedule next frame ONLY after this one finishes
+            // Check if stream is still active before rescheduling
+            if (stream && stream.active) {
+                setTimeout(processFrame, 100); // 100ms delay between frames
+            }
+        }
     }
 });
