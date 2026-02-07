@@ -1,8 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // Initialize Materialize Components
-    M.AutoInit();
-
+    // --- UI Elements ---
     const video = document.getElementById('screenVideo');
+    const videoContainer = document.getElementById('videoContainer'); 
     const startBtn = document.getElementById('startShareBtn');
     const stopBtn = document.getElementById('stopShareBtn');
     const overlayCanvas = document.getElementById('overlayCanvas');
@@ -12,13 +11,104 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetLangSelect = document.getElementById('targetLang');
     const overlayToggle = document.getElementById('overlayToggle');
 
-    // Google Vision API
-    const VISION_API_URL = '/api/ocr';
+    // Theme Elements
+    const themeToggleBtn = document.getElementById('themeToggle');
+    const htmlElement = document.documentElement;
+    const themeIcon = themeToggleBtn.querySelector('i');
 
+    // Chat Elements
+    const chatInput = document.getElementById('chatInput');
+    const sendChatBtn = document.getElementById('sendChatBtn');
+    const chatMessages = document.getElementById('chatMessages');
+
+    // --- State ---
+    const VISION_API_URL = '/api/ocr';
     let stream = null;
-    let translationCache = new Map(); // Simple cache: text -> translatedText
+    let translationCache = new Map();
     let isProcessing = false;
 
+    // --- Theme Logic ---
+    function initTheme() {
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        htmlElement.setAttribute('data-theme', savedTheme);
+        updateThemeIcon(savedTheme);
+    }
+
+    function toggleTheme() {
+        const currentTheme = htmlElement.getAttribute('data-theme');
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        htmlElement.setAttribute('data-theme', newTheme);
+        localStorage.setItem('theme', newTheme);
+        updateThemeIcon(newTheme);
+    }
+
+    function updateThemeIcon(theme) {
+        if (theme === 'dark') {
+            themeIcon.classList.replace('ph-sun', 'ph-moon');
+        } else {
+            themeIcon.classList.replace('ph-moon', 'ph-sun');
+        }
+    }
+
+    themeToggleBtn.addEventListener('click', toggleTheme);
+    initTheme();
+
+    // --- Chat Logic ---
+    function addMessage(text, isUser = false) {
+        const msgDiv = document.createElement('div');
+        msgDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+
+        if (isUser) {
+            contentDiv.textContent = text;
+        } else {
+            // Parse Markdown for bot messages
+            contentDiv.innerHTML = marked.parse(text);
+            // Highlight code blocks
+            contentDiv.querySelectorAll('pre code').forEach((block) => {
+                hljs.highlightElement(block);
+            });
+        }
+
+        msgDiv.appendChild(contentDiv);
+        chatMessages.appendChild(msgDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    async function handleChatSubmit() {
+        const text = chatInput.value.trim();
+        if (!text) return;
+
+        addMessage(text, true);
+        chatInput.value = '';
+
+        try {
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text })
+            });
+            const data = await response.json();
+
+            if (data.answer) {
+                addMessage(data.answer);
+            } else {
+                addMessage("Sorry, I couldn't generate an answer.");
+            }
+        } catch (e) {
+            console.error(e);
+            addMessage("Error: Could not connect to the assistant.");
+        }
+    }
+
+    sendChatBtn.addEventListener('click', handleChatSubmit);
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') handleChatSubmit();
+    });
+
+    // --- Screen Share & Translation Logic ---
 
     startBtn.addEventListener('click', async () => {
         try {
@@ -32,13 +122,12 @@ document.addEventListener('DOMContentLoaded', () => {
             stopBtn.disabled = false;
             statusText.innerText = 'Screen sharing active. Processing...';
             progressBar.classList.remove('hide');
+            videoContainer.classList.add('sharing-active'); 
 
-            // Handle stream stop (e.g. via browser UI)
             stream.getVideoTracks()[0].onended = () => {
                 stopScreenShare();
             };
 
-            // Wait for video to load metadata to set canvas size
             video.onloadedmetadata = () => {
                 resizeCanvas();
                 startProcessing();
@@ -62,8 +151,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         startBtn.disabled = false;
         stopBtn.disabled = true;
-        statusText.innerText = 'Screen share stopped.';
+        statusText.innerText = 'Ready to start';
         progressBar.classList.add('hide');
+        videoContainer.classList.remove('sharing-active'); 
         isProcessing = false;
     }
 
@@ -80,11 +170,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function processFrame() {
-        if (!stream) return; // Stop if no stream
+        if (!stream || !stream.active) return;
 
-        // 0. Check if we should process
         if (!overlayToggle.checked) {
-            // If overlay is off, check again in 1 second
             setTimeout(processFrame, 1000);
             return;
         }
@@ -92,14 +180,12 @@ document.addEventListener('DOMContentLoaded', () => {
         isProcessing = true;
 
         try {
-            // 1. Capture Frame to Offscreen Canvas
             const captureCanvas = document.createElement('canvas');
             captureCanvas.width = video.videoWidth;
             captureCanvas.height = video.videoHeight;
             const captureCtx = captureCanvas.getContext('2d');
             captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
 
-            // 2. OCR via Google Vision API
             const base64Image = captureCanvas.toDataURL('image/jpeg', 0.8);
 
             const response = await fetch(VISION_API_URL, {
@@ -109,31 +195,19 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             const data = await response.json();
-
             let lines = [];
-            if (data.responses && data.responses[0] && data.responses[0].textAnnotations) {
-                // The first annotation is the full text, subsequent ones are individual words/blocks
-                // We want to reconstruct lines or use block structure if available.
-                // For simplicity, let's look at fullTextAnnotation for structure or just use textAnnotations (which are words usually)
-                // Actually, textAnnotations[1:] are usually words. fullTextAnnotation provides hierarchical structure (Pages -> Blocks -> Paragraphs -> Words -> Symbols)
 
-                // Let's use fullTextAnnotation to get paragraphs/lines which might be better than raw words.
-                const fullText = data.responses[0].fullTextAnnotation;
-                if (fullText) {
-                    lines = parseVisionResponse(fullText);
-                }
+            if (data.responses && data.responses[0] && data.responses[0].fullTextAnnotation) {
+                lines = parseVisionResponse(data.responses[0].fullTextAnnotation);
             }
 
-            // 3. Prepare for Translation
             const validLines = lines.filter(line => line.text.trim().length > 0);
 
-            // 4. Clear and Draw Overlay
+            // Clear Overlay
             ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
             const scaleX = overlayCanvas.width / video.videoWidth;
             const scaleY = overlayCanvas.height / video.videoHeight;
-
-            // Common font settings for measurement/baseline
             ctx.textBaseline = 'middle';
 
             for (const line of validLines) {
@@ -143,11 +217,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 let translatedText = originalText;
 
-                // Check Cache
                 if (translationCache.has(cacheKey)) {
                     translatedText = translationCache.get(cacheKey);
                 } else {
-                    // Call API
                     try {
                         const response = await fetch('/api/translate', {
                             method: 'POST',
@@ -164,43 +236,33 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                // Geometric Data
-                // Vision API returns vertices: [{x, y}, {x, y}, {x, y}, {x, y}]
-                // Tesseract returned bbox: {x0, y0, x1, y1}
-                // We need to convert vertices to bbox
+                // Draw Text
                 const x0 = Math.min(...line.bbox.map(v => v.x));
                 const y0 = Math.min(...line.bbox.map(v => v.y));
                 const x1 = Math.max(...line.bbox.map(v => v.x));
                 const y1 = Math.max(...line.bbox.map(v => v.y));
 
-                // VISUAL POLISH: Padding
-                const padding = 4;
+                const padding = 6;
                 const sx = (x0 * scaleX) - padding;
                 const sy = (y0 * scaleY) - padding;
                 const sw = ((x1 - x0) * scaleX) + (padding * 2);
                 const sh = ((y1 - y0) * scaleY) + (padding * 2);
 
-                // Adaptive Background
                 const bgColor = getAverageColor(captureCtx, x0, y0, x1 - x0, y1 - y0);
 
-                // Draw Background
+                // Rounded corners for text background
+                roundRect(ctx, sx, sy, sw, sh, 4);
                 ctx.fillStyle = `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})`;
-                ctx.fillRect(sx, sy, sw, sh);
+                ctx.fill();
 
-                // Adaptive Text Color
-                // YIQ brightness formula
                 const brightness = (bgColor.r * 299 + bgColor.g * 587 + bgColor.b * 114) / 1000;
                 ctx.fillStyle = brightness > 125 ? '#000' : '#FFF';
 
-                // Font Sizing & Centering
-                // Fit text within height with some margin
                 const fontSize = Math.min(24, Math.max(12, (sh - 4) * 0.9));
-                ctx.font = `bold ${fontSize}px Arial`;
+                ctx.font = `bold ${fontSize}px Inter, Arial`;
 
                 const textX = sx + padding;
-                // Vertical center: box top + half height
                 const textY = sy + (sh / 2);
-
                 ctx.fillText(translatedText, textX, textY);
             }
 
@@ -208,11 +270,25 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error("Processing error: ", err);
         } finally {
             isProcessing = false;
-            // Schedule next frame ONLY after this one finishes
             if (stream && stream.active) {
-                setTimeout(processFrame, 1000); // 1 Second delay to avoid rate limits
+                setTimeout(processFrame, 1000);
             }
         }
+    }
+
+    // Helper to draw rounded rectangles
+    function roundRect(ctx, x, y, width, height, radius) {
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + width - radius, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+        ctx.lineTo(x + width, y + height - radius);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+        ctx.lineTo(x + radius, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
     }
 
     function getAverageColor(ctx, x, y, w, h) {
@@ -237,12 +313,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     b: Math.round(b / count)
                 };
             }
-        } catch (e) {
-            // console.warn(e);
-        }
-        // Default to black if something fails
+        } catch (e) { }
         return { r: 0, g: 0, b: 0 };
     }
+
     function parseVisionResponse(fullTextAnnotation) {
         const lines = [];
         const pages = fullTextAnnotation.pages || [];
@@ -250,7 +324,6 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const page of pages) {
             for (const block of page.blocks || []) {
                 for (const paragraph of block.paragraphs || []) {
-                    // Treat each paragraph as a "line" or text block for translation context
                     let paragraphText = "";
                     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
@@ -269,10 +342,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         paragraphText += wordText;
 
-                        // Update BBox for the whole paragraph based on words
                         if (word.boundingBox && word.boundingBox.vertices) {
                             for (const v of word.boundingBox.vertices) {
-                                // Vision API sometimes returns null or missing x/y for 0
                                 const vx = v.x || 0;
                                 const vy = v.y || 0;
                                 minX = Math.min(minX, vx);
