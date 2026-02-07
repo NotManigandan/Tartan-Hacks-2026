@@ -4,6 +4,7 @@ const axios = require('axios');
 const path = require('path');
 const Redis = require('redis');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const PDFDocument = require('pdfkit');
 require('dotenv').config();
 const bodyParser = require('body-parser');
 
@@ -119,6 +120,19 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
+// Session Management
+app.post('/api/start-session', async (req, res) => {
+    try {
+        const sessionId = Date.now().toString();
+        // Initialize empty logs list
+        await redisClient.del(`session:${sessionId}:logs`);
+        res.json({ sessionId });
+    } catch (error) {
+        console.error('Start Session Error:', error);
+        res.status(500).json({ error: 'Failed to start session' });
+    }
+});
+
 // Translate API Proxy
 app.post('/api/translate', async (req, res) => {
     try {
@@ -171,27 +185,42 @@ app.post('/api/translate', async (req, res) => {
 // OCR API Proxy
 app.post('/api/ocr', async (req, res) => {
     try {
-        const { image } = req.body;
+        const { image, sessionId } = req.body;
         if (!image) {
-            return res.status(400).json({ error: 'Image data is required' });
+            return res.status(400).json({ error: 'Image is required' });
         }
 
-        if (!process.env.GOOGLE_API_KEY) {
-            return res.status(500).json({ error: 'Google API Key not configured' });
-        }
-
+        // Remove header if present
         const base64Image = image.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
 
+        // Generate a hash or key for the image to cache results
+        // For simplicity, use first 50 chars + length as key (in production use real hash)
         const apiCacheKey = `ocr:${base64Image.substring(0, 50)}:${base64Image.length}`;
 
         try {
             const cachedResult = await redisClient.get(apiCacheKey);
             if (cachedResult) {
                 console.log('Serving OCR from cache');
-                return res.json(JSON.parse(cachedResult));
+                const data = JSON.parse(cachedResult);
+
+                // Log to session even on cache hit if helpful, but maybe dedupe
+                if (sessionId && data.responses && data.responses[0]?.fullTextAnnotation?.text) {
+                    const text = data.responses[0].fullTextAnnotation.text;
+                    await redisClient.rPush(`session:${sessionId}:logs`, JSON.stringify({
+                        type: 'ocr',
+                        text: text,
+                        timestamp: Date.now()
+                    }));
+                }
+
+                return res.json(data);
             }
         } catch (e) {
             console.error('Redis get error', e);
+        }
+
+        if (!process.env.GOOGLE_API_KEY) {
+            return res.status(500).json({ error: 'Google API Key not configured' });
         }
 
         const response = await axios.post(
@@ -214,17 +243,27 @@ app.post('/api/ocr', async (req, res) => {
 
         try {
             await redisClient.set(apiCacheKey, JSON.stringify(response.data), {
-                EX: 86400 * 7 // Cache for 7 days
+                EX: 86400 * 7 // Cache for 7 days, OCR results unlikely to change
             });
         } catch (e) {
             console.error('Redis set error', e);
         }
 
-        // --- RAG Indexing ---
+        // --- RAG Indexing & Session Logging ---
         try {
             if (response.data.responses && response.data.responses[0]?.fullTextAnnotation?.text) {
                 const fullText = response.data.responses[0].fullTextAnnotation.text;
+                // Run in background to not block response
                 ragService.addDocument(fullText).catch(console.error);
+
+                if (sessionId) {
+                    await redisClient.rPush(`session:${sessionId}:logs`, JSON.stringify({
+                        type: 'ocr',
+                        text: fullText,
+                        timestamp: Date.now()
+                    }));
+                }
+
                 console.log('Indexed OCR text for RAG');
             }
         } catch (e) {
@@ -241,17 +280,147 @@ app.post('/api/ocr', async (req, res) => {
 // Chat API Endpoint
 app.post('/api/chat', async (req, res) => {
     try {
-        const { message } = req.body;
+        const { message, sessionId } = req.body;
         if (!message) {
             return res.status(400).json({ error: 'Message is required' });
         }
 
         const answer = await ragService.generateAnswer(message);
+
+        if (sessionId) {
+            await redisClient.rPush(`session:${sessionId}:logs`, JSON.stringify({
+                type: 'chat',
+                question: message,
+                answer: answer,
+                timestamp: Date.now()
+            }));
+        }
+
         res.json({ answer });
 
     } catch (error) {
         console.error('Chat API Error:', error);
         res.status(500).json({ error: 'Failed to generate answer' });
+    }
+});
+
+// Generate Report Endpoint
+app.get('/api/generate-report', async (req, res) => {
+    try {
+        const { sessionId } = req.query;
+        if (!sessionId) return res.status(400).send('Session ID required');
+
+        const logsRaw = await redisClient.lRange(`session:${sessionId}:logs`, 0, -1);
+        const logs = logsRaw.map(l => JSON.parse(l));
+
+        if (logs.length === 0) {
+            return res.status(404).send('No logs found for this session');
+        }
+
+        // 1. Generate Summary with Gemini
+        const logText = logs.map(l => {
+            if (l.type === 'ocr') return `[SCREEN TEXT]: ${l.text.substring(0, 200)}...`;
+            if (l.type === 'chat') return `[USER ASKED]: ${l.question}\n[AI ANSWERED]: ${l.answer}`;
+            return '';
+        }).join('\n');
+
+        const summaryPrompt = `
+        Analyze the following troubleshooting session logs and generate a structured Incident Report.
+        
+        LOGS:
+        ${logText}
+        
+        OUTPUT FORMAT (JSON):
+        {
+            "problem_description": "Brief summary of what the user was looking at or asking about.",
+            "root_cause": "Inferred root cause based on errors seen or questions asked.",
+            "steps_taken": ["Step 1", "Step 2", ...],
+            "recommendations": "What should be done next?"
+        }
+        `;
+
+        const model = ragService.chatModel;
+        const result = await model.generateContent(summaryPrompt);
+        const summaryText = result.response.text();
+
+        // Clean markdown code blocks if present
+        const jsonString = summaryText.replace(/```json/g, '').replace(/```/g, '').trim();
+        let summaryData = {};
+        try {
+            summaryData = JSON.parse(jsonString);
+        } catch (e) {
+            summaryData = { problem_description: "Could not parse AI summary", steps_taken: [] };
+        }
+
+        // 2. Generate PDF using PDFKit
+        const doc = new PDFDocument();
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=incident_report_${sessionId}.pdf`);
+
+        doc.pipe(res);
+
+        // Header
+        doc.fontSize(20).text('Incident Report & SOP', { align: 'center' });
+        doc.moveDown();
+        doc.fontSize(12).text(`Session ID: ${sessionId}`);
+        doc.text(`Date: ${new Date().toLocaleString()}`);
+        doc.moveDown();
+        doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+        doc.moveDown();
+
+        // AI Summary Section
+        doc.fontSize(16).text('Executive Summary');
+        doc.moveDown(0.5);
+        doc.fontSize(12).font('Helvetica-Bold').text('Problem Description:');
+        doc.font('Helvetica').text(summaryData.problem_description || 'N/A');
+        doc.moveDown();
+
+        if (summaryData.root_cause) {
+            doc.font('Helvetica-Bold').text('Inferred Root Cause:');
+            doc.font('Helvetica').text(summaryData.root_cause);
+            doc.moveDown();
+        }
+
+        doc.font('Helvetica-Bold').text('Steps Taken / SOP:');
+        if (summaryData.steps_taken && Array.isArray(summaryData.steps_taken)) {
+            summaryData.steps_taken.forEach((step, i) => {
+                doc.font('Helvetica').text(`${i + 1}. ${step}`);
+            });
+        }
+        doc.moveDown();
+
+        if (summaryData.recommendations) {
+            doc.font('Helvetica-Bold').text('Recommendations:');
+            doc.font('Helvetica').text(summaryData.recommendations);
+            doc.moveDown();
+        }
+
+        doc.moveTo(50, doc.y).lineTo(550, doc.y).stroke();
+        doc.moveDown();
+
+        // Detailed Logs
+        doc.fontSize(16).text('Session Verification Logs');
+        doc.moveDown(0.5);
+        doc.fontSize(10);
+
+        logs.forEach(log => {
+            const time = new Date(log.timestamp).toLocaleTimeString();
+            if (log.type === 'ocr') {
+                doc.fillColor('gray').text(`[${time}] Text Detected on Screen:`);
+                doc.fillColor('black').text(log.text.substring(0, 100).replace(/\n/g, ' ') + '...');
+            } else if (log.type === 'chat') {
+                doc.fillColor('blue').text(`[${time}] User: ${log.question}`);
+                doc.fillColor('green').text(`AI: ${log.answer}`);
+            }
+            doc.moveDown(0.5);
+        });
+
+        doc.end();
+
+    } catch (error) {
+        console.error('Report Generation Error:', error);
+        if (!res.headersSent) res.status(500).send('Failed to generate report');
     }
 });
 

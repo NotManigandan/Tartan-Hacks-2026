@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI Elements ---
     const video = document.getElementById('screenVideo');
-    const videoContainer = document.getElementById('videoContainer'); 
+    const videoContainer = document.getElementById('videoContainer');
     const startBtn = document.getElementById('startShareBtn');
     const stopBtn = document.getElementById('stopShareBtn');
     const overlayCanvas = document.getElementById('overlayCanvas');
@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let stream = null;
     let translationCache = new Map();
     let isProcessing = false;
+    let currentSessionId = null;
 
     // --- Theme Logic ---
     function initTheme() {
@@ -88,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text })
+                body: JSON.stringify({ message: text, sessionId: currentSessionId })
             });
             const data = await response.json();
 
@@ -110,8 +111,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Screen Share & Translation Logic ---
 
-    startBtn.addEventListener('click', async () => {
+    startBtn.addEventListener('click', startScreenShare);
+
+    async function startScreenShare() {
         try {
+            // Start Session on Backend
+            try {
+                const res = await fetch('/api/start-session', { method: 'POST' });
+                const data = await res.json();
+                currentSessionId = data.sessionId;
+                console.log('Session Started:', currentSessionId);
+            } catch (e) {
+                console.error('Failed to start session', e);
+            }
+
             stream = await navigator.mediaDevices.getDisplayMedia({
                 video: { cursor: "always" },
                 audio: false
@@ -120,41 +133,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
             startBtn.disabled = true;
             stopBtn.disabled = false;
-            statusText.innerText = 'Screen sharing active. Processing...';
+            statusText.innerText = 'Session Recording...';
             progressBar.classList.remove('hide');
-            videoContainer.classList.add('sharing-active'); 
+            videoContainer.classList.add('sharing-active');
 
             stream.getVideoTracks()[0].onended = () => {
                 stopScreenShare();
             };
 
-            video.onloadedmetadata = () => {
-                resizeCanvas();
-                startProcessing();
-            };
-
+            // Removed video.onloadedmetadata as per diff, assuming video is ready immediately or handled by processFrame
+            resizeCanvas(); // Ensure canvas is sized correctly
+            isProcessing = true;
+            processFrame();
         } catch (err) {
-            console.error("Error sharing screen: ", err);
-            statusText.innerText = 'Error starting screen share.';
+            console.error("Error starting screen share:", err);
+            statusText.innerText = 'Error starting screen share';
         }
-    });
+    }
 
     stopBtn.addEventListener('click', stopScreenShare);
 
     function stopScreenShare() {
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
-            stream = null;
+            stream = null; // Set stream to null after stopping tracks
         }
         video.srcObject = null;
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height); // Clear overlay
 
         startBtn.disabled = false;
         stopBtn.disabled = true;
-        statusText.innerText = 'Ready to start';
+        statusText.innerText = 'Generating Report...';
         progressBar.classList.add('hide');
-        videoContainer.classList.remove('sharing-active'); 
+        videoContainer.classList.remove('sharing-active');
         isProcessing = false;
+
+        // Trigger Report Download
+        if (currentSessionId) {
+            window.location.href = `/api/generate-report?sessionId=${currentSessionId}`;
+            statusText.innerText = 'Report Downloaded. Ready to start.';
+            currentSessionId = null;
+        } else {
+            statusText.innerText = 'Ready to start';
+        }
     }
 
     function resizeCanvas() {
@@ -191,7 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch(VISION_API_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image: base64Image })
+                body: JSON.stringify({ image: base64Image, sessionId: currentSessionId })
             });
 
             const data = await response.json();
