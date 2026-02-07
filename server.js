@@ -3,13 +3,16 @@ const cors = require('cors');
 const axios = require('axios');
 const path = require('path');
 require('dotenv').config();
-
+const bodyParser = require('body-parser');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+// app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 // Translate API Proxy
 app.post('/api/translate', async (req, res) => {
