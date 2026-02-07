@@ -3,6 +3,7 @@
 let audioCtx = null;
 let bgmNodes = [];
 let isMuted = false;
+let currentSpeed = 1.0;
 
 export function initAudio() {
     if (audioCtx) return;
@@ -62,8 +63,7 @@ export function startMusic() {
     if (audioCtx.state === 'suspended') audioCtx.resume();
     if (bgmNodes.length > 0) return;
 
-    const bpm = 120; // Faster
-    const beatLen = 60 / bpm;
+    const bpm = 110;
 
     // Bass Sequence (E2 root - Driving)
     // E - E - G - A 
@@ -74,6 +74,9 @@ export function startMusic() {
 
     const scheduler = () => {
         while (nextNoteTime < audioCtx.currentTime + 0.1) {
+            // Dynamic beat length based on speed
+            const beatLen = (60 / bpm) / currentSpeed;
+
             // Bass line
             playNote(sequence[noteIndex], nextNoteTime, beatLen);
 
@@ -97,8 +100,19 @@ export function startMusic() {
     scheduler();
 }
 
+export function setMusicSpeed(speed) {
+    // Clamp speed to avoid audio breaking
+    currentSpeed = Math.max(1.0, Math.min(speed, 2.0));
+}
+
 function playNote(freq, time, duration) {
     if (isMuted) return;
+
+    // Adjust duration for faster tempo?
+    // Actually, duration should probably scale too to keep distinct notes
+    // But for now let's just keep duration fixed or slightly scaled
+    const scaledDuration = duration / currentSpeed;
+
     const osc = audioCtx.createOscillator();
     osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(freq, time);
@@ -106,18 +120,18 @@ function playNote(freq, time, duration) {
     const filter = audioCtx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.setValueAtTime(600, time); // Brighter bass
-    filter.frequency.linearRampToValueAtTime(100, time + duration - 0.05);
+    filter.frequency.linearRampToValueAtTime(100, time + scaledDuration - 0.05);
 
     const gain = audioCtx.createGain();
     gain.gain.setValueAtTime(0.15, time); // Lower volume to mix with drums
-    gain.gain.exponentialRampToValueAtTime(0.01, time + duration - 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.01, time + scaledDuration - 0.05);
 
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(audioCtx.destination);
 
     osc.start(time);
-    osc.stop(time + duration);
+    osc.stop(time + scaledDuration);
 }
 
 function playKick(time) {

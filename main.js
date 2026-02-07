@@ -1,8 +1,6 @@
 
 import { Mat4 } from './math.js';
-import { initAudio, startMusic, stopMusic, playCrash } from './audio.js';
-
-// Configuration
+import { initAudio, startMusic, stopMusic, playCrash, setMusicSpeed } from './audio.js';
 const CONFIG = {
     laneWidth: 3,
     speed: 0.5,
@@ -477,21 +475,26 @@ function render(time) {
     // Update Road Scroll
     // Scroll Z from 0 to 10 (dash pattern length = 10)
     const patternLength = 10;
+
+    // Calculate Difficulty Multiplier based on score
+    // 0 score -> 1.0
+    // 50 score -> 1.5 (50 * 0.01)
+    // Max out at some point?
+    const difficulty = 1.0 + (state.score * 0.02);
+
     if (state.isPlaying) {
-        roadOffset = (roadOffset + 0.5) % patternLength;
+        // Road moves faster with difficulty
+        roadOffset = (roadOffset + (0.5 * difficulty)) % patternLength;
+
+        // Update Music Speed - Dampened (Audio speeds up slower than game)
+        // Game diff goes 1.0 -> 2.0
+        // Audio speed goes 1.0 -> 1.3 (30% increase max)
+        const audioSpeed = 1.0 + ((difficulty - 1.0) * 0.3);
+        setMusicSpeed(audioSpeed);
     }
 
     // Draw Road - Draw two segments to cover the distance seamlessly
-    // Segment 1
     drawMesh(0, 0, roadOffset, buffers.road);
-    // Segment 2 (behind it, although our z is negative, so "in front" effectively)
-    // Actually, we define road from 0 to -200.
-    // We want to draw one at 0 and one at -200?
-    // Fog covers up to 120. Segment is 200. One segment is enough if we wrap it correctly.
-    // But moving it +10 means we see empty space at -200?
-    // Easier: Draw 2 segments always.
-    // Segment 1 at Z = offset
-    // Segment 2 at Z = offset - 200
     drawMesh(0, 0, roadOffset - 200, buffers.road);
 
     if (state.isPlaying) {
@@ -500,10 +503,19 @@ function render(time) {
 
         if (time > state.spawnTimer) {
             createObstacle();
-            state.spawnTimer = time + CONFIG.spawnInterval;
+            // Decrease interval as difficulty increases
+            // Base: 1400. Min: 600.
+            const baseInterval = Math.max(600, 1400 - (state.score * 15));
+
+            // Add Randomness: +/- 30% variance
+            const variance = baseInterval * 0.3;
+            const randomDelay = (Math.random() * variance * 2) - variance;
+
+            state.spawnTimer = time + baseInterval + randomDelay;
         }
 
-        const moveSpeed = 0.5;
+        // Speed increases with difficulty
+        const moveSpeed = 0.5 * difficulty; // Base speed * multiplier
         const dt = delta / 16;
 
         for (let i = obstacles.length - 1; i >= 0; i--) {
@@ -523,7 +535,6 @@ function render(time) {
             drawMesh(ob.x, ob.y, ob.z, buffers.enemy);
         }
     }
-
     // Draw Player
     drawMesh(player.x, player.y, player.z, buffers.player, player.rotZ);
 
