@@ -1,0 +1,26 @@
+{
+  "name": "tartan-hacks-2026",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NotManigandan/Tartan-Hacks-2026.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/NotManigandan/Tartan-Hacks-2026/issues"
+  },
+  "homepage": "https://github.com/NotManigandan/Tartan-Hacks-2026#readme",
+  "description": "",
+  "dependencies": {
+    "three": "^0.182.0",
+    "vite": "^7.3.1"
+  }
+}

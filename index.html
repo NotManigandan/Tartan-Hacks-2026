@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Neon Racer</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="ui-layer">
+      <div id="score-display">Score: 0</div>
+      <div id="start-screen" class="screen">
+        <h1>NEON RACER</h1>
+        <p>Dodging Traffic at High Speed</p>
+        <button id="start-btn">START ENGINE</button>
+      </div>
+      <div id="game-over-screen" class="screen hidden">
+        <h1>CRASHED!</h1>
+        <p id="final-score">Score: 0</p>
+        <button id="retry-btn">RETRY</button>
+      </div>
+    </div>
+    <div id="canvas-container"></div>
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
