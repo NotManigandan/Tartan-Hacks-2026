@@ -12,21 +12,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetLangSelect = document.getElementById('targetLang');
     const overlayToggle = document.getElementById('overlayToggle');
 
+    // Google Vision API
+    const VISION_API_URL = '/api/ocr';
+
     let stream = null;
-    let recognitionInterval = null;
     let translationCache = new Map(); // Simple cache: text -> translatedText
     let isProcessing = false;
 
-    // Tesseract Worker
-    let worker = null;
-
-    async function initTesseract() {
-        statusText.innerText = 'Initializing Tesseract...';
-        worker = await Tesseract.createWorker('eng');
-        statusText.innerText = 'Ready to share screen.';
-    }
-
-    initTesseract();
 
     startBtn.addEventListener('click', async () => {
         try {
@@ -88,7 +80,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function processFrame() {
-        if (!stream || !worker) return; // Stop if no stream
+        if (!stream) return; // Stop if no stream
 
         // 0. Check if we should process
         if (!overlayToggle.checked) {
@@ -107,12 +99,33 @@ document.addEventListener('DOMContentLoaded', () => {
             const captureCtx = captureCanvas.getContext('2d');
             captureCtx.drawImage(video, 0, 0, captureCanvas.width, captureCanvas.height);
 
-            // 2. OCR
-            const ret = await worker.recognize(captureCanvas);
-            const lines = ret.data.lines;
+            // 2. OCR via Google Vision API
+            const base64Image = captureCanvas.toDataURL('image/jpeg', 0.8);
+
+            const response = await fetch(VISION_API_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image: base64Image })
+            });
+
+            const data = await response.json();
+
+            let lines = [];
+            if (data.responses && data.responses[0] && data.responses[0].textAnnotations) {
+                // The first annotation is the full text, subsequent ones are individual words/blocks
+                // We want to reconstruct lines or use block structure if available.
+                // For simplicity, let's look at fullTextAnnotation for structure or just use textAnnotations (which are words usually)
+                // Actually, textAnnotations[1:] are usually words. fullTextAnnotation provides hierarchical structure (Pages -> Blocks -> Paragraphs -> Words -> Symbols)
+
+                // Let's use fullTextAnnotation to get paragraphs/lines which might be better than raw words.
+                const fullText = data.responses[0].fullTextAnnotation;
+                if (fullText) {
+                    lines = parseVisionResponse(fullText);
+                }
+            }
 
             // 3. Prepare for Translation
-            const validLines = lines.filter(line => line.text.trim().length > 2 && line.confidence > 60);
+            const validLines = lines.filter(line => line.text.trim().length > 0);
 
             // 4. Clear and Draw Overlay
             ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
@@ -152,7 +165,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 // Geometric Data
-                const { x0, y0, x1, y1 } = line.bbox;
+                // Vision API returns vertices: [{x, y}, {x, y}, {x, y}, {x, y}]
+                // Tesseract returned bbox: {x0, y0, x1, y1}
+                // We need to convert vertices to bbox
+                const x0 = Math.min(...line.bbox.map(v => v.x));
+                const y0 = Math.min(...line.bbox.map(v => v.y));
+                const x1 = Math.max(...line.bbox.map(v => v.x));
+                const y1 = Math.max(...line.bbox.map(v => v.y));
 
                 // VISUAL POLISH: Padding
                 const padding = 4;
@@ -191,7 +210,7 @@ document.addEventListener('DOMContentLoaded', () => {
             isProcessing = false;
             // Schedule next frame ONLY after this one finishes
             if (stream && stream.active) {
-                setTimeout(processFrame, 100);
+                setTimeout(processFrame, 1000); // 1 Second delay to avoid rate limits
             }
         }
     }
@@ -223,5 +242,61 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         // Default to black if something fails
         return { r: 0, g: 0, b: 0 };
+    }
+    function parseVisionResponse(fullTextAnnotation) {
+        const lines = [];
+        const pages = fullTextAnnotation.pages || [];
+
+        for (const page of pages) {
+            for (const block of page.blocks || []) {
+                for (const paragraph of block.paragraphs || []) {
+                    // Treat each paragraph as a "line" or text block for translation context
+                    let paragraphText = "";
+                    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+                    for (const word of paragraph.words || []) {
+                        let wordText = "";
+                        for (const symbol of word.symbols || []) {
+                            wordText += symbol.text;
+                            if (symbol.property && symbol.property.detectedBreak) {
+                                const breakType = symbol.property.detectedBreak.type;
+                                if (breakType === 'SPACE' || breakType === 'SURE_SPACE') {
+                                    wordText += " ";
+                                } else if (breakType === 'EOL_SURE_SPACE' || breakType === 'LINE_BREAK') {
+                                    wordText += "\n";
+                                }
+                            }
+                        }
+                        paragraphText += wordText;
+
+                        // Update BBox for the whole paragraph based on words
+                        if (word.boundingBox && word.boundingBox.vertices) {
+                            for (const v of word.boundingBox.vertices) {
+                                // Vision API sometimes returns null or missing x/y for 0
+                                const vx = v.x || 0;
+                                const vy = v.y || 0;
+                                minX = Math.min(minX, vx);
+                                minY = Math.min(minY, vy);
+                                maxX = Math.max(maxX, vx);
+                                maxY = Math.max(maxY, vy);
+                            }
+                        }
+                    }
+
+                    if (paragraphText.trim()) {
+                        lines.push({
+                            text: paragraphText,
+                            bbox: [
+                                { x: minX, y: minY },
+                                { x: maxX, y: minY },
+                                { x: maxX, y: maxY },
+                                { x: minX, y: maxY }
+                            ]
+                        });
+                    }
+                }
+            }
+        }
+        return lines;
     }
 });

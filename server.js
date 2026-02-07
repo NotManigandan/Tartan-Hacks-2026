@@ -40,6 +40,46 @@ app.post('/api/translate', async (req, res) => {
     }
 });
 
+// OCR API Proxy
+app.post('/api/ocr', async (req, res) => {
+    try {
+        const { image } = req.body;
+        if (!image) {
+            return res.status(400).json({ error: 'Image data is required' });
+        }
+
+        if (!process.env.GOOGLE_API_KEY) {
+            return res.status(500).json({ error: 'Google API Key not configured' });
+        }
+
+        // The image comes as "data:image/png;base64,...", we need just the base64 part
+        const base64Image = image.replace(/^data:image\/(png|jpeg|jpg);base64,/, '');
+
+        const response = await axios.post(
+            `https://vision.googleapis.com/v1/images:annotate?key=${process.env.GOOGLE_API_KEY}`,
+            {
+                requests: [
+                    {
+                        image: {
+                            content: base64Image
+                        },
+                        features: [
+                            {
+                                type: 'TEXT_DETECTION'
+                            }
+                        ]
+                    }
+                ]
+            }
+        );
+
+        res.json(response.data);
+    } catch (error) {
+        console.error('OCR Error:', error.response ? error.response.data : error.message);
+        res.status(500).json({ error: 'OCR failed' });
+    }
+});
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
 });
