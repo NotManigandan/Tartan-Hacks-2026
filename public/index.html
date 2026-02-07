@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Share Translator</title>
+    <!-- Google Fonts: Inter for a clean, modern look -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Phosphor Icons for modern vector icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <i class="ph ph-translate"></i>
+                <span>ScreenTranslator</span>
+            </div>
+            <div class="header-controls">
+                <button id="themeToggle" class="icon-btn" aria-label="Toggle Theme">
+                    <i class="ph ph-moon"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <main>
+            <!-- Left Panel: Video & Controls -->
+            <section class="video-section card glass-panel">
+                <div class="video-container-custom" id="videoContainer">
+                    <div class="canvas-wrapper">
+                        <video id="screenVideo" autoplay playsinline muted></video>
+                        <canvas id="overlayCanvas"></canvas>
+                    </div>
+                    <div class="placeholder-text" id="placeholderText">
+                        <i class="ph ph-monitor-play"></i>
+                        <p>Share your screen to start translating</p>
+                    </div>
+                </div>
+
+                <div class="controls-bar">
+                    <div class="control-group">
+                        <label for="targetLang">Translate to:</label>
+                        <div class="select-wrapper">
+                            <select id="targetLang">
+                                <option value="es" selected>Spanish 🇪🇸</option>
+                                <option value="fr">French 🇫🇷</option>
+                                <option value="de">German 🇩🇪</option>
+                                <option value="zh">Chinese 🇨🇳</option>
+                                <option value="ja">Japanese 🇯🇵</option>
+                                <option value="hi">Hindi 🇮🇳</option>
+                            </select>
+                            <i class="ph ph-caret-down"></i>
+                        </div>
+                    </div>
+
+                    <div class="control-group toggle-group">
+                        <label for="overlayToggle" class="toggle-label">
+                            <span>Overlay</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="overlayToggle" checked>
+                                <span class="slider"></span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div class="action-buttons">
+                        <button id="startShareBtn" class="btn primary-btn">
+                            <i class="ph ph-screencast"></i> Share Screen
+                        </button>
+                        <button id="stopShareBtn" class="btn danger-btn" disabled>
+                            <i class="ph ph-stop-circle"></i> Stop
+                        </button>
+                    </div>
+                </div>
+
+                <div class="status-bar">
+                    <p id="statusId">Ready to start</p>
+                    <div class="progress-bar hide" id="progressBar">
+                        <div class="progress-fill"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel: Chatbot -->
+            <section class="chat-section card glass-panel">
+                <div class="chat-header">
+                    <h3><i class="ph ph-robot"></i> AI Assistant</h3>
+                    <span class="badge">Beta</span>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message bot-message">
+                        <div class="message-content">
+                            Hello! I am your translation assistant. Once you start sharing, I can help explain the
+                            translated text or answer questions about it.
+                        </div>
+                    </div>
+                    <!-- Messages will be appended here -->
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" id="chatInput" placeholder="Ask about the translation...">
+                    <button id="sendChatBtn" class="icon-btn primary">
+                        <i class="ph ph-paper-plane-right"></i>
+                    </button>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Markdown Parser -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="/static/script.js"></script>
+</body>
+
+</html>
