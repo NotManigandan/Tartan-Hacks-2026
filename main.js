@@ -1,5 +1,6 @@
 
 import { Mat4 } from './math.js';
+import { initAudio, startMusic, stopMusic, playCrash } from './audio.js';
 
 // Configuration
 const CONFIG = {
@@ -317,6 +318,14 @@ function handleInput(xChange) {
     state.targetX = state.lane * CONFIG.laneWidth;
 }
 
+function setLane(laneIndex) {
+    if (!state.isPlaying) return;
+    state.lane = laneIndex;
+    if (state.lane < -1) state.lane = -1;
+    if (state.lane > 1) state.lane = 1;
+    state.targetX = state.lane * CONFIG.laneWidth;
+}
+
 window.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowLeft' || e.key === 'a') handleInput(-1);
     if (e.key === 'ArrowRight' || e.key === 'd') handleInput(1);
@@ -333,8 +342,52 @@ const handleEnd = (e) => {
 window.addEventListener('touchend', handleEnd);
 window.addEventListener('mouseup', handleEnd);
 
+// Device Orientation (Tilt)
+function handleOrientation(event) {
+    if (!state.isPlaying) return;
+
+    // Gamma is the left-to-right tilt in degrees, where right is positive
+    const tilt = event.gamma;
+
+    // Thresholds for lane mapping
+    // < -15 deg -> Left Lane
+    // -15 deg to 15 deg -> Center Lane
+    // > 15 deg -> Right Lane
+
+    if (tilt < -15) {
+        setLane(-1);
+    } else if (tilt > 15) {
+        setLane(1);
+    } else {
+        setLane(0);
+    }
+}
+
+// iOS Requires User Permission for DeviceOrientation
+async function requestDeviceOrientation() {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+        try {
+            const response = await DeviceOrientationEvent.requestPermission();
+            if (response === 'granted') {
+                window.addEventListener('deviceorientation', handleOrientation);
+            } else {
+                alert('Permission denied for tilt controls');
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    } else {
+        // Non-iOS or older devices usually don't need permission
+        window.addEventListener('deviceorientation', handleOrientation);
+    }
+}
+
 // Game Funcs
 function startGame() {
+    initAudio(); // Initialize context on user interaction
+    startMusic(); // Start BGM
+
     state.isPlaying = true;
     state.score = 0;
     state.lane = 0;
@@ -348,10 +401,16 @@ function startGame() {
     dom.score.textContent = 'Score: 0';
     dom.startScreen.classList.add('hidden');
     dom.gameOverScreen.classList.add('hidden');
+
+    // Try to enable tilt controls on start
+    requestDeviceOrientation();
 }
 
 function gameOver() {
     state.isPlaying = false;
+    stopMusic(); // Stop BGM
+    playCrash(); // Play SFX
+
     dom.finalScore.textContent = `Score: ${Math.floor(state.score)}`;
     dom.gameOverScreen.classList.remove('hidden');
 }
